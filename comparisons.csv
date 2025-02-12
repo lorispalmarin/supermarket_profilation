@@ -1,0 +1,4 @@
+﻿model;AUC;RECALL;SPECIFICITY;PRECISION;F1;ACCURACY
+Logreg;90%;97%;51%;91%;93%;89%
+logregstep;90%;47%;97%;75%;58%;89%
+randomforest;90%;97%;47%;90%;93%;88%

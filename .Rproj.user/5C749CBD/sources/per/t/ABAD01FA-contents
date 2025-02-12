@@ -1,0 +1,166 @@
+install.packages("lubridate")
+install.packages("dplyr")
+install.packages("stringr")
+install.packages("tidyverse")
+install.packages("car")
+install.packages("leaps")
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(tidyverse)
+library(car)
+library(leaps)
+
+data <- read.csv("stage3.csv")
+
+## cols delete 
+cols_to_keep <- c("incident_id", "date", "state", "n_killed", "n_injured", "gun_stolen", "n_guns_involved", "participant_age", "participant_gender", "participant_type")
+data1 <- subset(data, select = cols_to_keep)
+
+#2017 selection
+data2 <- data1 %>% 
+  filter(year(date) == 2017)
+
+#rows separation
+
+## rimosso le righe con valori mancanti
+count_age <- str_count(data2$participant_age, "\\:")
+count_gender <- str_count(data2$participant_gender, "\\:")
+count_type <- str_count(data2$participant_type, "\\:")
+
+count <- count_age == count_gender &
+  count_gender == count_type & count_age >= 1
+
+data3 <- data2[count, ]
+
+## separare le righe
+clean_data <- function(column) {
+  column <- strsplit(column, "\\|\\|") %>%
+    lapply(function(x) gsub("^\\d+::", "", x)) %>%
+    sapply(function(x) paste(x, collapse = "||"))
+  return(column)
+}
+
+data3$participant_gender <- clean_data(data3$participant_gender)
+data3$participant_age <- clean_data(data3$participant_age)
+data3$participant_type <- clean_data(data3$participant_type)
+
+gender_df <- data3 %>%
+  separate_rows(participant_gender, sep = "\\|\\|")
+
+age_df <- data3 %>%
+  separate_rows(participant_age, sep = "\\|\\|")
+
+type_df <- data3 %>%
+  separate_rows(participant_type, sep = "\\|\\|")
+
+final_df <- cbind(gender_df, age_df[, -1], type_df[, -1])
+
+data4 <- final_df[c(1:7,9,17,28)]
+
+
+## aggiungo colonna somma
+data4$total_victims <- data4$n_killed + data4$n_injured
+
+## creo dataset con solo sospetti e solo vittime
+data5 <- data4 %>%
+  filter(participant_type != "Victim")
+
+data6 <- data4 %>%
+  filter(participant_type == "Victim")
+
+
+#######################################
+
+# Manipolazione dei dati
+data5_manipulated <- data5 %>%
+  # Calcola la media delle età dei partecipanti per ciascun incident_id
+  group_by(incident_id) %>%
+  mutate(avg_age = mean(as.numeric(participant_age))) %>%
+  # Assegna il genere in base alla presenza di "male" e/o "female"
+  mutate(gender = ifelse("Male" %in% participant_gender & "Female" %in% participant_gender, "mixed",
+                         ifelse("Male" %in% participant_gender, "Male",
+                                ifelse("Female" %in% participant_gender, "Female", NA)))) %>%
+  # Aggiungi una colonna con il numero di partecipanti
+  mutate(num_participants = n()) %>%
+  # Rimuovi le colonne temporanee create per il calcolo
+  select(-c(participant_age, participant_gender, participant_type))
+
+library(dplyr)
+
+# Assume 'data5_manipulated' come il tuo dataframe manipolato
+data6 <- data5_manipulated %>%
+  distinct(incident_id, .keep_all = TRUE)
+
+data6 <- na.omit(data6)
+
+
+######################## LINEAR REGRESSION
+
+summary(data6)
+which.max(data6$avg_age)
+#eliminazione outlier avg age 311
+data6 <- data6[-17653, ]
+data7 <- scale(data6[c(4,5,7,8,9,11)])
+
+boxplot(data7)
+summary(data7)
+
+linear_reg <- lm(total_victims ~ n_guns_involved + avg_age + gender + num_participants, data = data6 )
+summary(linear_reg)
+
+vif(linear_reg)
+sqrt(vif(linear_reg))>1.5
+
+
+# Best subset
+regfit_sub=regsubsets(total_victims ~ n_guns_involved + avg_age + gender + num_participants, data = data6)
+regsub.summary=summary(regfit_sub)
+plot(regsub.summary$cp,xlab="Number of Variables",ylab="Cp")
+plot(regfit_sub, scale="Cp")
+which.min(regsub.summary$cp)
+#tutte tranne genderMale
+
+#incidenza di male, motivo per cui non ha senso
+percentage_male <- prop.table(table(data6$gender))*100
+percentage_male
+
+############################# VALIDATION
+
+dim(data6)
+
+set.seed(1)
+train=sample(seq(nrow(data6)),nrow(data6)*0.7,replace=FALSE)
+train
+
+regfit.train=regsubsets(total_victims~n_guns_involved + avg_age + gender + num_participants,
+                        data=data6[train,])
+summary(regfit.train)
+MS_error=rep(NA,5)
+MS_error
+x.test=model.matrix(total_victims~n_guns_involved + avg_age + gender + num_participants,
+                    data=data6[-train,])
+x.test
+y.test=data6$total_victims[-train]
+
+for(i in 1:5){
+  coefi=coef(regfit.train,id=i)
+  pred=x.test[,names(coefi)]%*%coefi
+  MS_error[i]=mean((data6$total_victims[-train]-pred)^2)
+}
+
+plot(sqrt(MS_error),ylab="Root MSE", pch=19,type="b")
+points(sqrt(regfit.train$rss[-1]/length(train)),col="blue",pch=19,type="b")
+
+############################### RIDGE REGRESSION 
+
+library(glmnet)
+x=model.matrix(total_victims~n_guns_involved + avg_age + gender + num_participants -1,data=data6) 
+y=data6$total_victims
+
+fit.ridge=glmnet(x,y,alpha=0)
+plot(fit.ridge,xvar="lambda",label=TRUE)
+cv.ridge=cv.glmnet(x,y,alpha=0)
+plot(cv.ridge)
+coef(cv.ridge)
+
